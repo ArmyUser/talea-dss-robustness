@@ -2,264 +2,210 @@
   <img src="media/logo_talea_roversi.png" alt="TALEA Logo" width="300"/>
 </div>
 
-<div align="center">
-  <a href="https://www.linkedin.com/in/christiandibuo/" target="_blank">Christian Di Buò</a> &nbsp; | &nbsp;
-  <a href="https://www.linkedin.com/in/simreale" target="_blank">Simone Reale</a>
-</div>
+# Assessing the Robustness of Optimization-Based Decision Support Systems
 
-# Sustainable City via Trustworthy Digital Twin: a Use Case
+**Master Thesis in Artificial Intelligence @ University of Bologna**
 
-Bologna, like many European cities, faces growing challenges from climate change, biodiversity loss, pollution, and unequal access to public space. 
-Problems like Urban Heat Islands (UHI) and Urban Heat Waves (UHW) particularly threaten vulnerable communities, straining public health and reducing quality of life. 
+Optimization-based decision support systems can make spatial trade-offs in urban planning explicit, but their recommendations may depend strongly on uncertain input data. This repository contains the code of a thesis that studies this issue on the **TALEA Bologna Green Cells** case study, where MiniZinc optimization models select candidate locations for modular green interventions over a 100×100 m city grid.
 
-To address these issues, the __*TALEA*__ project, supported by the *European Urban Initiative – Innovative Actions (EUI-IA)*, introduces **TALEA Green Cells (TGCs)**: modular, adaptable green units that reconnect fragmented green areas, regenerate underutilized spaces, and create local climate refuges.
+The work:
+
+1. reconstructs the baseline data pipeline, preprocessing stages and MiniZinc models of the TALEA case study;
+2. injects **controlled synthetic perturbations** into environmental, demographic, land-use, geometric and allocation-related inputs;
+3. compares every perturbed solution with its no-noise baseline using **spatial** and **quantitative** robustness metrics;
+4. aggregates the results in a **cross-model comparison** of average stability, lower-tail fragility and degradation trends across perturbation levels.
+
+> This work builds on the TALEA Green Cells placement pipeline developed by [Christian Di Buò](https://www.linkedin.com/in/christiandibuo/) and [Simone Reale](https://www.linkedin.com/in/simreale). See [Credits](#credits).
+
+## Background: TALEA Green Cells
+
+Bologna, like many European cities, faces growing challenges from climate change, biodiversity loss, pollution and unequal access to public space. Urban Heat Islands (UHI) and Urban Heat Waves (UHW) particularly threaten vulnerable communities.
+
+The **TALEA** project, supported by the *European Urban Initiative – Innovative Actions (EUI-IA)*, introduces **TALEA Green Cells (TGCs)**: modular, adaptable green units that reconnect fragmented green areas, regenerate underutilized spaces and create local climate refuges.
 
 <div align="center">
   <img src="media/talea_green_cells.png" alt="TALEA Green Cells" width="600"/>
 </div>
 
-This repository presents a **transparent methodology for planning TGCs placement in Bologna**, relying on **interpretable AI optimization techniques**. The workflow combines open-source urban and demographic data with optimization-based modeling to explore how the distribution of Green Cells shifts under factors such as *population density*, *urban indices* or *land use*.
+TGC placement is modeled as a **Combinatorial Optimization Problem**. At the *macro scale* (statistical areas) it weighs *population density*, *existing green* and *UHEI*; at the *micro scale* (grid cells) four models are available:
 
-## Data
+| Model | `--model` | Objective |
+|:--|:--|:--|
+| Standard | `std` | Maximize a utility directly proportional to new green areas and inversely to existing ones. |
+| Difference | `diff` | Same idea as Standard, but accounts for existing green in a differential way. |
+| Inverse UHEI | `inverse_uhei` | Maximize the impact of the FVC on the inverse UHEI. |
+| NDVI | `ndvi` | Maximize the impact of the FVC on the NDVI via a quadratic relation, inversely proportional to the cell's current NDVI. |
 
-### Land Usage Dataset
+## Robustness Methodology
 
-<br>
+### Perturbations
 
-<div style="display:flex;align-items:center;gap:25px;">
-    <img src="media/geoportale_er.png" alt="Geoportale Emilia Romagna" width="160"/>
-    <div>
-        <a href="https://geoportale.regione.emilia-romagna.it/approfondimenti/database-uso-del-suolo" target="_blank"><h4>Urban fabric</h4></a>
-        <ul>
-            <li>Mapping of the various uses of the territory, classified according to a hierarchical legend derived from the specifications of the European project Corine Land Cover (CLC), integrated by the Land Use Working Group of CPSG-CISIS.</li>
-        </ul>
-    </div>
-</div>
+Each perturbation is defined by a **noise type**, a **noise source** and a **severity level** (1–5).
 
-<br>
+| Noise type | Description | Applicable sources |
+|:--|:--|:--|
+| `gauss` | Additive Gaussian noise | `ndvi`, `uhei`, `population_density`, `green_area`, `ext_space`, `street_space`, `full_space`, `num_areas` |
+| `multiplicative` | Multiplicative noise | `ndvi`, `uhei`, `population_density`, `green_area`, `ext_space`, `street_space`, `full_space` |
+| `mislabelling` | Random label flips | `land_use`, `population_density` |
+| `missingness` | Randomly removed records | `population_density`, `trees`, `num_areas` |
+| `geometric` | Shrinking / warping of geometries | `green_area`, `ext_space`, `street_space` |
+| `aggregation` | Alternative aggregation (`mean`, `median`) | `ndvi`, `uhei` |
 
-### Green Cover Dataset
+### Metrics
 
-<br>
+Each perturbed solution is compared with the corresponding no-noise baseline.
 
-<div style="display:flex;align-items:center;gap:25px;">
-    <img src="media/open_data_bologna_back.png" alt="Open Data Bologna" width="160"/>
-    <div>
-        <a href="https://opendata.comune.bologna.it/explore/dataset/un_gest/information/?flg=it-it&disjunctive.classe_unita_gestionale&disjunctive.area_statistica&disjunctive.zona_prossimita&disjunctive.quartiere" target="_blank"><h4>Municipal Green</h4></a>
-        <ul>
-            <li>Green units under the maintenance of the Bologna Municipality, including a wide range of categories, like flowerbeds, gardens, parks, ponds, school and sports green areas, roadside decorative greenery, etc.</li>
-        </ul>
-        <a href="https://opendata.comune.bologna.it/explore/dataset/verde_privato_urbanizzato/information/?flg=it-it" target="_blank"><h4>Private Green</h4></a>
-        <ul>
-            <li>Mapping of the private green areas within the Bologna cityscape.</li>
-        </ul>
-        <a href="https://opendata.comune.bologna.it/explore/dataset/alberi-manutenzioni/information/?flg=it-it&disjunctive.cl_h&disjunctive.dimora&disjunctive.classe&disjunctive.zona_di_prossimita&disjunctive.area_statistica" target="_blank"><h4>Municipal Trees</h4></a>
-        <ul>
-            <li>Mapping of the trees planted in the Bologna cityscape, containing the coordinates of each element and the information about the type of tree.</li>
-        </ul>
-    </div>
-</div>
+| Metric | `--metric` | Kind | Meaning |
+|:--|:--|:--|:--|
+| Jaccard similarity | `jaccard` | Spatial | Overlap between the selected cell sets. |
+| Centroid-buffer IoU | `iou_buffer` | Spatial | Overlap after matching selected cells within a distance buffer (default 300 m). |
+| Utility ratio | `utility_diff` | Quantitative | Objective value of the perturbed solution over the baseline. |
+| Yard allocation ratio | `yard_util` | Quantitative | Yard space allocated, perturbed over baseline. |
+| Street allocation ratio | `street_util` | Quantitative | Street space allocated, perturbed over baseline. |
 
-<br>
+For the cross-model comparison, all metrics are normalized to a 0–100 robustness scale: `100 * score` for spatial metrics and `100 * min(r, 1/r)` for ratios, so that increases and decreases from the baseline are treated symmetrically.
 
-<div style="display:flex;align-items:center;gap:25px;">
-    <img src="media/geoportale_er.png" alt="Geoportale Emilia Romagna" width="160"/>
-    <div>
-        <a href="https://geoportale.regione.emilia-romagna.it/catalogo/dati-cartografici/ambiente/carte-forestali/provincia-di-bologna" target="_blank"><h4>Forestal scape</h4></a>
-        <ul>
-            <li>Landscape area covered by tree and/or shrub and/or bush vegetation of forest species, whether of natural or artificial origin, at any stage of development, with a density greater than 10%.</li>
-        </ul>
-        <a href="https://geoportale.regione.emilia-romagna.it/catalogo/dati-cartografici/acque-interne" target="_blank"><h4>Riverscape</h4></a>
-        <ul>
-            <li>Landscape area covered by water, including rivers, riverbeds and lakes.</li>
-        </ul>
-    </div>
-</div>
+### Key results (full map)
 
-<br>
+| Model | Mean robustness | Median | Worst case |
+|:--|--:|--:|--:|
+| `inverse_uhei` | 94.0 % | 98.1 % | 42.1 % |
+| `std` | 93.9 % | 97.9 % | 44.5 % |
+| `ndvi` | 92.0 % | 98.8 % | 0.6 % |
+| `diff` | 84.1 % | 98.0 % | 21.2 % |
 
-### Human Infrastructure
+Most outputs are stable on average, but specific model–source–perturbation combinations are fragile: for example, Gaussian noise on NDVI strongly shifts the solutions of the `ndvi` model. The full report is in [`evaluation/full/comparison/comparison_report.md`](evaluation/full/comparison/comparison_report.md) and the plots are in [`plot/full/comparison/`](plot/full/comparison/).
 
-<br>
-
-<div style="display:flex;align-items:center;gap:25px;">
-    <img src="media/open_data_bologna_back.png" alt="Open Data Bologna" width="160"/>
-    <div>
-        <a href="https://opendata.comune.bologna.it/explore/dataset/rifter_edif_pl/information/?flg=it-it" target="_blank"><h4>CTC - Particle Buildings</h4></a>
-        <ul>
-            <li> Mapping of buildings with parcel details extracted from the Municipal Technical Map and public cadastral information (Sheet/Parcel).</li>
-        </ul>
-        <a href="https://opendata.comune.bologna.it/explore/dataset/aree-stradali/information/?flg=it-it&disjunctive.descrizion&disjunctive.origine" target="_blank"><h4> CTC - Road Area</h4></a>
-        <ul>
-            <li>Street areas in the city of Bologna, including all the different types of roads, parking areas and squares, extracted from the Municipal Technical Map.</li>
-        </ul>
-    </div>
-</div>
-
-<br>
-
-### Statistical Data
-
-<br>
-
-<div style="display:flex;align-items:center;gap:25px;">
-    <img src="media/open_data_bologna_back.png" alt="Open Data Bologna" width="160"/>
-    <div>
-        <a href="https://opendata.comune.bologna.it/explore/dataset/aree-statistiche/information/?flg=it-it" target="_blank"><h4>Statistical Areas</h4></a>
-        <ul>
-            <li>Division of the municipal territory into 90 statistical areas, more detailed way than the traditional division of Bologna into districts or zones.</li>
-        </ul>
-        <a href="https://inumeridibolognametropolitana.it/dati-statistici/popolazione-residente-quartiere-zona-e-area-statistica-al-31-dicembre" target="_blank"><h4>Population per statistical area</h4></a>
-        <ul>
-            <li>Dataset of the population density of Bologna, computed at different levels of granularity (districts, city zones and statistical areas).</li>
-        </ul>
-    </div>
-</div>
-
-<br>
-
-<div style="display:flex;align-items:center;gap:35px;">
-    <img src="doc/source/_static/logo_talea_nitido.png" alt="TALEA Project" width="150"/>
-    <div>
-        <a href="https://github.com/TALEA-platform/uhi" target="_blank"><h4>Urban Heat Island Analysis</h4></a>
-        <ul>
-            <li>Analysis of the Urban Heat Island (UHI) effects in the city of Bologna, by processing and integrating satellite data from Landsat 8/9 and MODIS with spatial indicators like NDVI, LST, Albedo, and derived composite indices.</li>
-        </ul>
-    </div>
-</div>
-
-<br>
-
-## Models
-
-The placement of TGCs is modeled as a **Combinatorial Optimization Problem (COP)** and relies on the impact of different factors on *micro* and *macro scale* and on how fragmented each area is.
-
-The *macro scale* is referred to the statistical areas, where three indices are considered:
-- *population density*
-- *existing green*
-- *UHEI*
-
-The *micro scale* is referred to the grid of 100x100 m cells, and is modeled differently according to four different approaches:
-
-| Standard | Difference | Inverse UHEI | NDVI |
-|:--------------:|:--------------:|:--------------:|:--------------:|
-|It aims to maximize a utility function, which is directly proportional to new green areas and inversely to existing ones. |Based on the same concept of the Standard one, it considers the impact of the existing green in a differential way. |It maximizes the impact of the FVC on the Inverse UHEI, directly w.r.t. new TGCs and inversely to the existing vegetation. |It maximizes the impact of the FVC on the NDVI, according to a quadratic relation, inversely proportional to the actual NDVI of the cell. |
-
-> Further details on models, indices and sources of this study can be found in the **report** and in the **documentation**.
+> The analysis is scenario-based and reproducible, but it is not a full Monte Carlo uncertainty quantification.
 
 ## Usage
 
-To reproduce our results, ensure Docker is installed on your system. Once Docker is installed, to run the docker the following scripts should be executed from the terminal while in the Dockerfile directory:
+### 1. Get the data
 
-- To build and run the docker
+The `dataset/` folder is **not included** in this repository because of its size (the perturbed datasets amount to ~49 GB). Download the raw data from the sources listed in [Data Sources](#data-sources) and place it in `dataset/raw_data/`:
 
-    ```
-    docker-compose up --build -d
-    ```
+```
+dataset/raw_data/
+├── alberi-manutenzioni.fgb
+├── aree-boschive.gpkg
+├── aree-fluviali.gpkg
+├── aree-statistiche.geojson
+├── aree-stradali.geojson
+├── carta-tecnica-comunale-binari-ferroviari.fgb
+├── ferrovia.geojson
+├── localita_abitative.gpkg
+├── popolazione_per_area_statistica.csv
+├── rifter_edif_pl.geojson
+├── un_gest.fgb
+├── uso_suolo_bologna.geojson
+├── verde_privato_urbanizzato.fgb
+└── indexes/
+    ├── ndvi_mean.geojson
+    └── urban_heat_exposure_index.geojson
+```
 
-- To exec docker commands from your terminal
+All perturbed datasets are then generated by the pipeline below.
 
-    ```
-    docker exec -it TALEA bash
-    ```
+### 2. Start the container
 
-### Rules
+Docker is required. From the repository root:
 
-There are two modalities to run the pipeline in the docker shell:
+```bash
+cp .env.example .env
+docker-compose up --build -d
+docker exec -it talea_dev bash
+```
 
-- one for running the entire pipeline, including the grid creation step, necessary for the first run, after changing the size and for changing something in the geometry of data
+### 3. Run the pipeline
 
-    ```bash
-    run_pipeline
-    ```
+All commands are available inside the container. Run any of them with `--help` for the full list of options.
 
-- one for running only the further processing steps, including the instance creation and the solver, used for changing parameter configuration
+| Command | Step |
+|:--|:--|
+| `data_processing` | Perturbs the raw input data (`ndvi`, `uhei`, `land_use`, `population_density`). |
+| `grid_creation` | Builds the grid and the processed dataset, optionally applying noise. Needed on the first run and whenever the geometry or the noise changes. |
+| `run_model` | Creates the MiniZinc instance and solves it with the chosen model and parameters. |
+| `eval_metrics` | Computes robustness metrics against the baseline, produces plots and runs the cross-model comparison. |
 
-    ```bash
-    run_model
-    ```
+Example: baseline vs. Gaussian noise on UHEI, level 2, with the `diff` model:
 
-> Run the `--help` option on each command for further details on usage and parameters configuration.
+```bash
+# Baseline
+grid_creation --size full
+run_model --size full --model diff
 
-## Useful Links
+# Perturbed scenario
+data_processing --noise_type gauss --noise_source uhei --noise_level 2
+grid_creation --size full --noise_type gauss --noise_source uhei --noise_level 2
+run_model --size full --model diff --noise_type gauss --noise_source uhei --noise_level 2
 
-This project relies on spatial data, which is best understood when visualized and exploring them in tables often leads to ambiguity and poor clarity. Therefore, a simple **Graphical User Interface (GUI)** has been implented to display GeoJson files.
+# Evaluation
+eval_metrics --size full --model diff --metric all
+eval_metrics --size full --model diff --metric all --plot True
+eval_metrics --size full --metric all --compare True
+```
 
-<div align="center">
-  <a href="https://talea-gui.netlify.app/">
-    <img src="https://img.shields.io/badge/🚀_Launch_GUI_--brightgreen" alt="GUI" height="25"/>
-  </a>
-</div>
-<br>
+Outputs:
 
-Furthermore, any step of the process is explained in a **report** and a **documentation** that follows the ReadTheDocs format, including further details on data, models and the results obtained.
-
-<div align="center">
-  <a href="TALEA_report.pdf">
-    <img src="https://img.shields.io/badge/📄_Report_--darkred" alt="Report" height="25"/>
-  </a>
-    &nbsp;
-  <a href="https://talea-documentation.netlify.app/">
-    <img src="https://img.shields.io/badge/📑_Documentation_--blue" alt="Documentation" height="25"/>
-  </a>
-</div>
-<br>
+- Solutions: `results/<size>/<model>/std/`
+- Per-model metrics: `evaluation/<size>/<model>/<metric>.csv`
+- Per-model plots: `plot/<size>/<model>/`
+- Cross-model comparison: `evaluation/<size>/comparison/` and `plot/<size>/comparison/`
 
 ## Repository Structure
 
-```bash
-config/
-├───center/
-├───full/
-└───update_config.py
-dataset/
-├───processed_data/
-│   ├───center/
-│   └───full/
-└───raw_data/
-    └───indexes/
-frontend/
-├───public/
-│   └───results/
-│       ├───center/
-│       │   ├───diff/
-│       │   ├───inverse_uhei/
-│       │   ├───ndvi/
-│       │   └───std/
-│       └───full/
-│           ├───diff/
-│           ├───inverse_uhei/
-│           ├───ndvi/
-│           └───std/
-└───src/
-    ├───assets/
-    ├───App.css
-    ├───App.jsx
-    ├───DatasetMenu.jsx
-    ├───index.css
-    ├───LayerSidebar.jsx
-    ├───LoadButton.jsx
-    ├───main.jsx
-    ├───SimpleMap.jsx
-    └───utils.js
-results/
-├───center/
-│   ├───diff/
-│   ├───inverse_uhei/
-│   ├───ndvi/
-│   └───std/
-└───full/
-    ├───diff/
-    ├───inverse_uhei/
-    ├───ndvi/
-    └───std/
-src/
-├───Minizinc/
-│   ├───instances/
-│   └───models/
-├───data_parser.py
-├───grid_creation.py
-├───preprocessing.py
-├───solver.py
-└───utils.py
 ```
+config/          Configuration files for the center and full map
+src/
+├── Minizinc/    MiniZinc models and generated instances
+├── process_data.py    Input perturbations
+├── grid_creation.py   Grid construction
+├── preprocessing.py   Feature computation per cell
+├── data_parser.py     MiniZinc instance generation
+├── solver.py          Solver wrapper
+├── evaluation.py      Robustness metrics and comparison
+└── utils.py
+results/         Optimization outputs (GeoJSON)
+evaluation/      Robustness metrics (CSV) and comparison report
+plot/            Robustness plots
+frontend/        Web GUI to explore GeoJSON results
+doc/             Sphinx documentation of the original pipeline
+data_processing, grid_creation, run_model, eval_metrics   CLI entry points
+```
+
+## Data Sources
+
+<details>
+<summary>Open data used by the pipeline</summary>
+
+**Land use**
+- [Urban fabric](https://geoportale.regione.emilia-romagna.it/approfondimenti/database-uso-del-suolo) (Geoportale Emilia-Romagna): land use classified with a hierarchical legend derived from Corine Land Cover.
+
+**Green cover**
+- [Municipal Green](https://opendata.comune.bologna.it/explore/dataset/un_gest/information/) (Open Data Bologna): green units maintained by the Municipality.
+- [Private Green](https://opendata.comune.bologna.it/explore/dataset/verde_privato_urbanizzato/information/) (Open Data Bologna): private green areas.
+- [Municipal Trees](https://opendata.comune.bologna.it/explore/dataset/alberi-manutenzioni/information/) (Open Data Bologna): coordinates and type of each tree.
+- [Forest areas](https://geoportale.regione.emilia-romagna.it/catalogo/dati-cartografici/ambiente/carte-forestali/provincia-di-bologna) and [Riverscape](https://geoportale.regione.emilia-romagna.it/catalogo/dati-cartografici/acque-interne) (Geoportale Emilia-Romagna).
+
+**Human infrastructure**
+- [CTC – Buildings](https://opendata.comune.bologna.it/explore/dataset/rifter_edif_pl/information/) (Open Data Bologna).
+- [CTC – Road areas](https://opendata.comune.bologna.it/explore/dataset/aree-stradali/information/) (Open Data Bologna).
+
+**Statistical data**
+- [Statistical Areas](https://opendata.comune.bologna.it/explore/dataset/aree-statistiche/information/) (Open Data Bologna): 90 statistical areas.
+- [Population per statistical area](https://inumeridibolognametropolitana.it/dati-statistici/popolazione-residente-quartiere-zona-e-area-statistica-al-31-dicembre).
+
+**Environmental indices**
+- [Urban Heat Island Analysis](https://github.com/TALEA-platform/uhi) (TALEA): NDVI, LST, albedo and the Urban Heat Exposure Index from Landsat 8/9 and MODIS.
+
+</details>
+
+## Credits
+
+The baseline pipeline (data preprocessing, grid creation, MiniZinc models, GUI and documentation) was developed by **Christian Di Buò** and **Simone Reale** within the TALEA project. Their [documentation](https://talea-documentation.netlify.app/) and [GUI](https://talea-gui.netlify.app/) describe the original methodology in detail.
+
+This thesis extends it with the perturbation framework, the robustness metrics and the cross-model comparison.
+
+## License
+
+Released under the [Apache License 2.0](LICENSE).

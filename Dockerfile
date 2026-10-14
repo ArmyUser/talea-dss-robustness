@@ -37,18 +37,15 @@ RUN apt-get update && \
 #    rm -rf /var/lib/apt/lists/*
 
 # Make the pipeline script executable
-COPY run_pipeline /usr/local/bin/run_pipeline
 COPY run_model /usr/local/bin/run_model
-COPY process_data /usr/local/bin/process_data
+COPY data_processing /usr/local/bin/data_processing
 COPY grid_creation /usr/local/bin/grid_creation
 COPY eval_metrics /usr/local/bin/eval_metrics
 
-RUN sed -i 's/\r$//' /usr/local/bin/run_pipeline &&\
-chmod +x /usr/local/bin/run_pipeline
 RUN sed -i 's/\r$//' /usr/local/bin/run_model &&\
 chmod +x /usr/local/bin/run_model
-RUN sed -i 's/\r$//' /usr/local/bin/process_data &&\
-chmod +x /usr/local/bin/process_data
+RUN sed -i 's/\r$//' /usr/local/bin/data_processing &&\
+chmod +x /usr/local/bin/data_processing
 RUN sed -i 's/\r$//' /usr/local/bin/grid_creation &&\
 chmod +x /usr/local/bin/grid_creation
 RUN sed -i 's/\r$//' /usr/local/bin/eval_metrics &&\

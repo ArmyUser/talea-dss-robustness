@@ -16,3 +16,6 @@ doc/build/
 .DS_Store
 processing
 prova.dSYM
+
+# Python cache
+__pycache__/
