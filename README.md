@@ -15,7 +15,7 @@ The work:
 3. compares every perturbed solution with its no-noise baseline using **spatial** and **quantitative** robustness metrics;
 4. aggregates the results in a **cross-model comparison** of average stability, lower-tail fragility and degradation trends across perturbation levels.
 
-> This work builds on the TALEA Green Cells placement pipeline developed by [Christian Di Buò](https://www.linkedin.com/in/christiandibuo/) and [Simone Reale](https://www.linkedin.com/in/simreale). See [Credits](#credits).
+> This work builds on the TALEA Green Cells placement pipeline developed by Christian Di Buò and Simone Reale. See [Credits](#credits).
 
 ## Background: TALEA Green Cells
 
