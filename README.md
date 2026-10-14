@@ -4,7 +4,7 @@
 
 # Assessing the Robustness of Optimization-Based Decision Support Systems
 
-**Master Thesis in Artificial Intelligence @ University of Bologna**
+**Master Thesis in Artificial Intelligence University of Bologna**
 
 Optimization-based decision support systems can make spatial trade-offs in urban planning explicit, but their recommendations may depend strongly on uncertain input data. This repository contains the code of a thesis that studies this issue on the **TALEA Bologna Green Cells** case study, where MiniZinc optimization models select candidate locations for modular green interventions over a 100×100 m city grid.
 
