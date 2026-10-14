@@ -1,0 +1,18 @@
+# Data (49 GB, too large for GitHub)
+dataset/
+
+# Third-party report (60 MB)
+TALEA_report.pdf
+
+# Local environment (machine-specific paths)
+.env
+.venv/
+
+# Build output / dependencies
+frontend/node_modules/
+doc/build/
+
+# OS / misc
+.DS_Store
+processing
+prova.dSYM

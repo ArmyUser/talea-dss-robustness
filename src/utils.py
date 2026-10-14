@@ -1,0 +1,162 @@
+import numpy as np
+import pandas as pd
+from pathlib import Path
+
+
+WORKING_DIR_PATH = Path.cwd()
+RAW_DATA_DIR_PATH = WORKING_DIR_PATH.joinpath("dataset", "raw_data")
+PROCESSED_DATA_DIR_PATH = WORKING_DIR_PATH.joinpath("dataset", "processed_data")
+
+
+def to_dzn(model, instance):
+    """
+    Takes the problem instance and converts it to a string in the format required by MiniZinc.
+    
+    Input:
+    - instance: tuple, components of the problem instance
+    Output:
+    - text: string, formatted instance in the MiniZinc format
+
+    """
+
+    if model == 'std':
+        num_cells, top_k, beta_streets, alpha_yard, street_space, ext_space, green_space, num_areas, num_trees, macro_factors, full_space = instance
+    elif model == 'diff':
+        num_cells, top_k, beta_streets, alpha_yard, alpha_uhei, street_space, ext_space, green_space, num_areas, num_trees, macro_factors, full_space, uhei = instance
+    elif model == 'inverse_uhei':
+        num_cells, top_k, beta_streets, alpha_yard, inverse_uhei_95p, inverse_uhei_5p, street_space, ext_space, green_space, num_areas, num_trees, macro_factors, full_space = instance
+    elif model == 'ndvi':
+        num_cells, top_k, beta_streets, alpha_yard, ndvi_norm_max, ndvi_norm_min, street_space, ext_space, green_space, num_areas, num_trees, macro_factors, full_space, ndvi = instance
+
+    num_cells_str = 'len = ' + str(num_cells) + ';\n'
+    top_k_str = 'top_k = ' + str(top_k) + ';\n'
+    beta_streets_str = 'beta_streets = ' + str(beta_streets) + ';\n'
+    alpha_yard_str = 'alpha_yard = ' + str(alpha_yard) + ';\n'
+    street_space_str = 'street_space = [ '
+    ext_space_str = 'ext_space = [ '
+    green_space_str = 'green_space = [ '
+    num_areas_str = 'num_areas = [ '
+    num_trees_str = 'num_trees = [ '
+    macro_factors_str = 'macro_factors = [ '
+    full_space_str = 'full_space = [ '
+    for i in range(num_cells):
+        if i == num_cells - 1:
+            street_space_str += str(street_space[i]) + ' ];\n'
+            ext_space_str += str(ext_space[i]) + ' ];\n'
+            green_space_str += str(green_space[i]) + ' ];\n'
+            num_areas_str += str(num_areas[i]) + ' ];\n'
+            num_trees_str += str(num_trees[i]) + ' ];\n'
+            macro_factors_str += str(macro_factors[i]) + ' ];\n'
+            full_space_str += str(full_space[i]) + ' ];\n'
+        else:
+            street_space_str += str(street_space[i]) + ', '
+            ext_space_str += str(ext_space[i]) + ', '
+            green_space_str += str(green_space[i]) + ', '
+            num_areas_str += str(num_areas[i]) + ', '
+            num_trees_str += str(num_trees[i]) + ', '
+            macro_factors_str += str(macro_factors[i]) + ', '
+            full_space_str += str(full_space[i]) + ', '
+    
+    if model == 'std':
+        text = num_cells_str + top_k_str + beta_streets_str + alpha_yard_str + street_space_str + ext_space_str + green_space_str + num_areas_str + num_trees_str + macro_factors_str + full_space_str
+
+    elif model == 'diff':
+        alpha_uhei_str = 'alpha_uhei = ' + str(alpha_uhei) + ';\n'
+        uhei_str = 'uhei = [ '
+        for i in range(num_cells):
+            if i == num_cells - 1:
+                uhei_str += str(uhei[i]) + ' ];\n'
+            else:
+                uhei_str += str(uhei[i]) + ', '
+        text = num_cells_str + top_k_str + beta_streets_str + alpha_yard_str + alpha_uhei_str + street_space_str + ext_space_str + green_space_str + num_areas_str + num_trees_str + macro_factors_str + full_space_str + uhei_str
+
+    elif model == 'inverse_uhei':
+        inverse_uhei_95p_str = 'inverse_uhei_95p = ' + str(inverse_uhei_95p) + ';\n'
+        inverse_uhei_5p_str = 'inverse_uhei_5p = ' + str(inverse_uhei_5p) + ';\n'
+        text = num_cells_str + top_k_str + beta_streets_str + alpha_yard_str + inverse_uhei_95p_str + inverse_uhei_5p_str + street_space_str + ext_space_str + green_space_str + num_areas_str + num_trees_str + macro_factors_str + full_space_str
+
+    elif model == 'ndvi':
+        ndvi_norm_max_str = 'ndvi_norm_max = ' + str(ndvi_norm_max) + ';\n'
+        ndvi_norm_min_str = 'ndvi_norm_min = ' + str(ndvi_norm_min) + ';\n'
+        ndvi_str = 'ndvi = [ '
+        for i in range(num_cells):
+            if i == num_cells - 1:
+                ndvi_str += str(ndvi[i]) + ' ];\n'
+            else:
+                ndvi_str += str(ndvi[i]) + ', '
+        text = num_cells_str + top_k_str + beta_streets_str + alpha_yard_str + ndvi_norm_max_str + ndvi_norm_min_str + street_space_str + ext_space_str + green_space_str + num_areas_str + num_trees_str + macro_factors_str + full_space_str + ndvi_str
+    return text
+
+def density_per_area(gdf_area, df_dens):
+    """
+    Computes the density of the population in each cell of the grid based on the intersection area with the statistic areas of Bologna.
+
+    Input:
+    - gdf_area: GeoDataFrame, contains the grid data with the intersection area and zone names
+    - df_dens: DataFrame, contains the population data for each zone
+    Output:
+    - df_out: DataFrame, contains the density of the population for each cell of the grid
+
+    """
+
+    cells_values = gdf_area['id'].unique()
+    num_cells = len(cells_values)
+    df_out = pd.DataFrame(columns=['id', 'density'])
+    for i in range(num_cells):
+        temp_df = gdf_area.loc[gdf_area['id'] == cells_values[i]]
+        tot_space = np.ceil(100 * temp_df.intersect_area_statistica.sum()) / 100
+        tot_space = tot_space if tot_space <= 10000 else 10000.0
+        temp_sum = 0
+        for _, row in temp_df.iterrows():
+            code = row['codice_area_statistica']
+            temp_dens = df_dens[df_dens['Codice Area Statistica'] == code]
+            density = float(temp_dens['Densità'].values[0])
+            temp_sum += density * row['intersect_area_statistica']
+        df_out.loc[len(df_out)] = [cells_values[i], temp_sum / tot_space]
+    return df_out
+
+def macro_factor_per_area(gdf_area, gdf_macro):
+    """
+    Computes the macro utility factor for each area based on the statistic area occupancy.
+
+    Input:
+    - gdf_area: GeoDataFrame, contains the grid data with the intersection area of the statistic areas
+    - gdf_macro: GeoDataFrame, contains the macro utility factors for each statistic area
+    Output:
+    - out: numpy.ndarray, macro utility factor for each cell of the grid
+    
+    """
+
+    cells_values = gdf_area['id'].unique()
+    num_cells = len(cells_values)
+    out = np.zeros((num_cells, ), dtype=float)
+    for i in range(num_cells):
+        temp_df = gdf_area.loc[gdf_area['id'] == cells_values[i]]
+        tot_space = np.ceil(100 * temp_df.intersect_area_statistica.sum()) / 100
+        tot_space = tot_space if tot_space <= 10000 else 10000.0
+        temp_sum = 0
+        for row in temp_df.itertuples():
+            temp_factor = gdf_macro[gdf_macro['codice_area_statistica'] == row.codice_area_statistica]['macro_utility_factor'].values[0]
+            temp_sum += temp_factor * row.intersect_area_statistica
+        out[i] = temp_sum / 10000
+    return out
+
+def full_space_per_area(gdf_area):
+    """
+    Computes the total space available in each cell of the grid.
+
+    Input:
+    - gdf_area: GeoDataFrame, contains the grid data with the intersection area and zone names
+    Output:
+    - out: numpy.ndarray, available space
+
+    """
+
+    cells_values = gdf_area['id'].unique()
+    num_cells = len(cells_values)
+    out = np.zeros((num_cells, ), dtype=float)
+    for i in range(num_cells):
+        temp_df = gdf_area.loc[gdf_area['id'] == cells_values[i]]
+        temp_sum = np.ceil(100 * temp_df.intersect_area_statistica.sum()) / 100
+        out[i] = temp_sum if temp_sum <= 10000 else 10000.0
+    return out

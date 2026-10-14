@@ -1,0 +1,424 @@
+#!/usr/bin/env bash
+set -e
+
+_err() {
+    echo "ERROR: $*" >&2
+    exit 1
+}
+
+_warn() {
+    echo "WARNING: $*" >&2
+}
+
+show_help() {
+    echo "Usage: run_model [OPTIONS]"
+    echo ""
+    echo "Options:"
+    echo "  --size str                   Map size: 'center' or 'full' (default: full)"
+    echo "  --model str                  Model: ndvi, inverse_uhei, diff, std (default: ndvi)"
+    echo "  --max_cells int              Maximum number of cells (default: 100)"
+    echo "  --density_param float        [Macro] Population density weight (default: 0.33)"
+    echo "  --green_param float          [Macro] Green space weight (default: 0.33)"
+    echo "  --uhei_param float           [Macro] UHEI weight (default: 0.34)"
+    echo "  --beta_streets float         [Micro] Street space weight (default: 0.2)"
+    echo "  --alpha_yards float          [Micro] Yard space weight (default: 0.8)"
+    echo "  --alpha_uhei float           [Micro] UHEI weight in the diff model, ignored for the other models"
+    echo "  --help                       Show this help message"
+    echo ""
+    echo "Optional noise options:"
+    echo "  --noise_type str             Type of noise: gauss, multiplicative, aggregation, mislabelling, missingness, geometric"
+    echo "  --noise_source str           Target dataset: ndvi, uhei, land_use, trees, num_areas, full_space, green_area, ext_space, street_space, population_density"
+    echo "  --noise_level str            Noise severity: 1, 2, 3, 4, 5"
+    echo "  --aggregation_method str     Method for aggregation noise: mean, median (weighted is the default)"
+    echo ""
+    echo "Notes:"
+    echo "- All float parameters must be in the range [0, 1]."
+    echo "- The macro parameters density_param, green_param and uhei_param must sum to 1."
+    echo ""
+    echo "Examples:"
+    echo ">> run_model --model diff"
+    echo ">> run_model --size full --model diff --max_cells 70 --density_param 0.5 --green_param 0.3 --uhei_param 0.2 --beta_streets 0.5 --alpha_yards 1.0 --noise_type gauss --noise_source uhei --noise_level 2"    
+    exit 0
+}
+
+# ============================
+# Default values
+# ============================
+
+SIZE="full"
+MODEL="ndvi"
+MAX_CELLS=100
+DENSITY_PARAM=0.33
+GREEN_PARAM=0.33
+UHEI_PARAM=0.34
+BETA_STREETS=0.2
+ALPHA_YARDS=0.8
+ALPHA_UHEI=0.0
+
+NOISE_TYPE=""
+NOISE_SOURCE=""
+NOISE_LEVEL=""
+AGGREGATION_METHOD=""
+
+OTHER_ARGS_SEEN=0
+
+# ============================
+# Parse parameters
+# ============================
+
+while [[ "$#" -gt 0 ]]; do
+    case "$1" in
+        --model)
+            MODEL="$2"
+            shift
+            ;;
+        --size)
+            SIZE="$2"
+            shift
+            ;;
+        --max_cells)
+            MAX_CELLS="$2"
+            shift
+            ;;
+        --density_param)
+            DENSITY_PARAM="$2"
+            shift
+            ;;
+        --green_param)
+            GREEN_PARAM="$2"
+            shift
+            ;;
+        --uhei_param)
+            UHEI_PARAM="$2"
+            shift
+            ;;
+        --beta_streets)
+            BETA_STREETS="$2"
+            shift
+            ;;
+        --alpha_yards)
+            ALPHA_YARDS="$2"
+            shift
+            ;;
+        --alpha_uhei)
+            ALPHA_UHEI="$2"
+            shift
+            ;;
+        --noise_type)
+            NOISE_TYPE="$2"
+            shift
+            ;;
+        --noise_source)
+            NOISE_SOURCE="$2"
+            shift
+            ;;
+        --noise_level)
+            NOISE_LEVEL="$2"
+            shift
+            ;;
+        --aggregation_method)
+            AGGREGATION_METHOD="$2"
+            shift
+            ;;
+        --help|-h)
+            show_help
+            ;;
+        *)
+            _err "Unknown parameter: $1"
+            show_help
+            ;;
+    esac
+    shift
+done
+
+# ============================
+# Enforce rules
+# ============================
+
+_is_noise_source_used_by_model() {
+    local model="$1"
+    local noise_source="$2"
+
+    case "$model" in
+        ndvi)
+            case "$noise_source" in
+                ndvi|land_use|trees|num_areas|full_space|green_area|ext_space|street_space|population_density)
+                    return 0
+                    ;;
+                *)
+                    return 1
+                    ;;
+            esac
+            ;;
+
+        inverse_uhei)
+            case "$noise_source" in
+                uhei|land_use|trees|num_areas|full_space|green_area|ext_space|street_space|population_density)
+                    return 0
+                    ;;
+                *)
+                    return 1
+                    ;;
+            esac
+            ;;
+
+        diff)
+            case "$noise_source" in
+                uhei|land_use|trees|num_areas|full_space|green_area|ext_space|street_space|population_density)
+                    return 0
+                    ;;
+                *)
+                    return 1
+                    ;;
+            esac
+            ;;
+
+        std)
+            case "$noise_source" in
+                land_use|trees|num_areas|full_space|green_area|ext_space|street_space|population_density)
+                    return 0
+                    ;;
+                *)
+                    return 1
+                    ;;
+            esac
+            ;;
+
+        *)
+            return 1
+            ;;
+    esac
+}
+
+# ALPHA_UHEI parameters standard based off the model chosen
+
+if [[ "$MODEL" == "diff" ]]; then
+    ALPHA_UHEI=0.5
+else
+    ALPHA_UHEI=0.0
+fi
+
+# MODEL RULES
+
+case "$MODEL" in
+    ndvi|inverse_uhei|diff|std)
+        ;;
+    *)
+        _err "Unknown --model: '$MODEL'. Allowed: ndvi, inverse_uhei, diff, std."
+        ;;
+esac
+
+# NOISE MODEL RULES
+
+if [[ -n "$NOISE_TYPE" && -n "$NOISE_SOURCE" ]]; then
+    if ! _is_noise_source_used_by_model "$MODEL" "$NOISE_SOURCE"; then
+        _err "--noise_source '$NOISE_SOURCE' is not used by model '$MODEL'."
+    fi
+fi
+
+# VALID NOISE RULES
+
+if [[ -n "${NOISE_TYPE}" ]]; then
+
+    if [[ -z "${NOISE_SOURCE}" ]]; then
+        echo "Error: --noise_source is required when --noise_type is provided." >&2
+        exit 1
+    fi
+    case "${NOISE_TYPE}" in
+        gauss)
+            if [[ "${NOISE_SOURCE}" != "ndvi" && "${NOISE_SOURCE}" != "uhei" && "${NOISE_SOURCE}" != "num_areas" && "${NOISE_SOURCE}" != "full_space" && "${NOISE_SOURCE}" != "green_area" && "${NOISE_SOURCE}" != "ext_space" && "${NOISE_SOURCE}" != "street_space" && "${NOISE_SOURCE}" != "population_density" ]]; then
+                _err "--noise_type '${NOISE_TYPE}' can only be used with --noise_source 'uhei', 'ndvi', 'num_areas', 'full_space', 'green_area', 'ext_space', 'street_space' or 'population_density'."
+            fi
+            if [[ -z "${NOISE_LEVEL}" ]]; then
+                _err "--noise_level is required when --noise_type is 'gauss' or 'multiplicative'."
+            fi
+            if [[ "${NOISE_LEVEL}" == "5" && "${NOISE_SOURCE}" == "num_areas" ]]; then
+                _err "--noise_level can't be 5 when --noise_source is 'num_areas' and noise_type is gauss."
+            fi
+            if [[ -n "${AGGREGATION_METHOD}" ]]; then
+                _warn "--aggregation_method is ignored when --noise_type is not 'aggregation'."
+            fi
+            ;;
+        geometric)
+            if [[ "${NOISE_SOURCE}" != "green_area" && "${NOISE_SOURCE}" != "ext_space" && "${NOISE_SOURCE}" != "street_space" ]]; then
+                _err "--noise_type '${NOISE_TYPE}' can only be used with --noise_source 'green_area', 'ext_space' or 'street_space'."
+            fi
+            if [[ -z "${NOISE_LEVEL}" ]]; then
+                _err "--noise_level is required when --noise_type is 'geometric'."
+            fi
+            if [[ -n "${AGGREGATION_METHOD}" ]]; then
+                _warn "--aggregation_method is ignored when --noise_type is not 'aggregation'."
+            fi
+            ;;
+        multiplicative)
+            if [[ "${NOISE_SOURCE}" != "ndvi" && "${NOISE_SOURCE}" != "uhei" && "${NOISE_SOURCE}" != "full_space" && "${NOISE_SOURCE}" != "green_area" && "${NOISE_SOURCE}" != "ext_space" && "${NOISE_SOURCE}" != "street_space" && "${NOISE_SOURCE}" != "population_density" ]]; then
+                _err "--noise_type '${NOISE_TYPE}' can only be used with --noise_source 'uhei', 'ndvi', 'full_space', 'green_area', 'ext_space', 'street_space' or 'population_density'."
+            fi
+            if [[ -z "${NOISE_LEVEL}" ]]; then
+                _err "--noise_level is required when --noise_type is 'gauss' or 'multiplicative'."
+            fi
+            if [[ -n "${AGGREGATION_METHOD}" ]]; then
+                _warn "--aggregation_method is ignored when --noise_type is not 'aggregation'."
+            fi
+            ;;
+        aggregation)
+            if [[ -z "${AGGREGATION_METHOD}" ]]; then
+                _err "--aggregation_method is required when --noise_type is 'aggregation'."
+            fi
+            if [[ "${NOISE_SOURCE}" != "ndvi" && "${NOISE_SOURCE}" != "uhei" ]]; then
+                _err "--noise_type 'aggregation' can only be used with --noise_source 'uhei' or 'ndvi'."
+            fi
+            if [[ -n "${NOISE_LEVEL}" ]]; then
+                _warn "--noise_level is ignored when --noise_type is 'aggregation'."
+            fi
+            ;;
+        missingness)
+            if [[ "${NOISE_SOURCE}" != "trees" && "${NOISE_SOURCE}" != "num_areas" && "${NOISE_SOURCE}" != "population_density" ]]; then
+                _err "--noise_type 'missingness' can only be used with --noise_source 'trees', 'num_areas' or 'population_density'."
+            fi
+            if [[ -z "${NOISE_LEVEL}" ]]; then
+                _err "--noise_level is required when --noise_type is 'missingness'."
+            fi
+            if [[ -n "${AGGREGATION_METHOD}" ]]; then
+                _warn "--aggregation_method is ignored when --noise_type is not 'aggregation'."
+            fi
+            ;;
+        mislabelling)
+            if [[ "${NOISE_SOURCE}" != "land_use" && "${NOISE_SOURCE}" != "population_density" ]]; then
+                _err "--noise_type 'mislabelling' can only be used with --noise_source 'land_use' or 'population_density'."
+            fi
+            if [[ -z "${NOISE_LEVEL}" ]]; then
+                _err "--noise_level is required when --noise_type is 'mislabelling'."
+            fi
+            if [[ -n "${AGGREGATION_METHOD}" ]]; then
+                _warn "--aggregation_method is ignored when --noise_type is not 'aggregation'."
+            fi
+            ;;
+        *)
+            _err "Unknown --noise_type: '${NOISE_TYPE}'. Allowed: gauss, multiplicative, aggregation, missingness, mislabelling, geometric."
+            ;;
+    esac
+fi
+
+
+# =======================================
+# Consistency check for size matching
+# =======================================
+
+echo "Checking consistency of size parameter..."
+echo ""
+PREV_SIZE=$(grep '^size:' config/config.yaml | awk '{print $2}')
+if [[ "$PREV_SIZE" != "$SIZE" ]]; then
+    echo "ERROR! The specified size $SIZE does not match the existing config size $PREV_SIZE. Please ensure that the size parameter is consistent with the existing configuration."
+    echo ""
+    exit 1
+fi
+
+# ============================
+# config.yaml update
+# ============================
+
+echo "Updating config files..."
+python3 config/update_config.py \
+  --size "$SIZE" \
+  --model "$MODEL" \
+  --max_cells "$MAX_CELLS" \
+  --density_param "$DENSITY_PARAM" \
+  --green_param "$GREEN_PARAM" \
+  --uhei_param "$UHEI_PARAM" \
+  --beta_streets "$BETA_STREETS" \
+  --alpha_yards "$ALPHA_YARDS" \
+  --alpha_uhei "$ALPHA_UHEI" \
+  --noise_type "$NOISE_TYPE" \
+  --noise_source "$NOISE_SOURCE" \
+  --noise_level "$NOISE_LEVEL" \
+  --aggregation_method "$AGGREGATION_METHOD" 
+echo ""
+
+# ============================
+# Run the scripts sequentially
+# ============================
+
+echo "Running preprocessing.py..."
+if [[ "${NOISE_TYPE}" == "aggregation" ]]; then
+    python3 src/preprocessing.py \
+        --density_param "$DENSITY_PARAM" \
+        --green_param "$GREEN_PARAM" \
+        --uhei_param "$UHEI_PARAM" \
+        --noise_type "${NOISE_TYPE}" \
+        --noise_source "${NOISE_SOURCE}" \
+        --aggregation_method "${AGGREGATION_METHOD}"
+elif [[ "${NOISE_TYPE}" == "" ]]; then
+    python3 src/preprocessing.py \
+        --density_param "$DENSITY_PARAM" \
+        --green_param "$GREEN_PARAM" \
+        --uhei_param "$UHEI_PARAM" 
+else
+    python3 src/preprocessing.py \
+        --density_param "$DENSITY_PARAM" \
+        --green_param "$GREEN_PARAM" \
+        --uhei_param "$UHEI_PARAM" \
+        --noise_type "${NOISE_TYPE}" \
+        --noise_source "${NOISE_SOURCE}" \
+        --noise_level "${NOISE_LEVEL}"
+fi
+echo ""
+
+echo "Running data_parser.py..."
+if [[ "${NOISE_TYPE}" == "aggregation" ]]; then
+    python3 src/data_parser.py \
+        --size "$SIZE" \
+        --model "$MODEL" \
+        --max_cells "$MAX_CELLS" \
+        --beta_streets "$BETA_STREETS" \
+        --alpha_yards "$ALPHA_YARDS" \
+        --alpha_uhei "$ALPHA_UHEI" \
+        --noise_type "${NOISE_TYPE}" \
+        --noise_source "${NOISE_SOURCE}" \
+        --aggregation_method "${AGGREGATION_METHOD}"
+elif [[ "${NOISE_TYPE}" == "" ]]; then
+    python3 src/data_parser.py \
+        --size "$SIZE" \
+        --model "$MODEL" \
+        --max_cells "$MAX_CELLS" \
+        --beta_streets "$BETA_STREETS" \
+        --alpha_yards "$ALPHA_YARDS" \
+        --alpha_uhei "$ALPHA_UHEI"
+else
+    python3 src/data_parser.py \
+        --size "$SIZE" \
+        --model "$MODEL" \
+        --max_cells "$MAX_CELLS" \
+        --beta_streets "$BETA_STREETS" \
+        --alpha_yards "$ALPHA_YARDS" \
+        --alpha_uhei "$ALPHA_UHEI" \
+        --noise_type "${NOISE_TYPE}" \
+        --noise_source "${NOISE_SOURCE}" \
+        --noise_level "${NOISE_LEVEL}"
+fi
+echo ""
+
+
+echo "Running solver.py..."
+if [[ "${NOISE_TYPE}" == "aggregation" ]]; then
+    python3 src/solver.py \
+        --size "$SIZE" \
+        --model "$MODEL" \
+        --noise_type "${NOISE_TYPE}" \
+        --noise_source "${NOISE_SOURCE}" \
+        --aggregation_method "${AGGREGATION_METHOD}"
+elif [[ "${NOISE_TYPE}" == "" ]]; then
+    python3 src/solver.py \
+        --size "$SIZE" \
+        --model "$MODEL" 
+else 
+    python3 src/solver.py \
+        --size "$SIZE" \
+        --model "$MODEL" \
+        --noise_type "${NOISE_TYPE}" \
+        --noise_source "${NOISE_SOURCE}" \
+        --noise_level "${NOISE_LEVEL}" 
+fi
+echo ""
+
+echo "Running completed!"

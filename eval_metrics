@@ -1,0 +1,946 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+show_help() {
+    echo "Usage: eval_metrics [OPTIONS]"
+    echo ""
+    echo "Evaluate model results, generate plots, and compare model robustness."
+    echo ""
+    echo "Options:"
+    echo "  --size str              Map size: center, full (default: full)"
+    echo "  --model str             Model: ndvi, inverse_uhei, diff, std (default: ndvi)"
+    echo "  --models str            Models for comparison: all or comma-list"
+    echo "                          Example: std,diff,inverse_uhei,ndvi"
+    echo "                          Default: all"
+    echo "  --metric str            Metric: jaccard, iou_buffer, utility_diff,"
+    echo "                          yard_util, street_util, all (default: jaccard)"
+    echo "  --plot bool             False computes metrics; True generates plots"
+    echo "                          from existing CSV files (default: False)"
+    echo "  --compare bool          False standard mode; True comparison mode"
+    echo "                          across models (default: False)"
+    echo "  --comparison_only bool  True runs only the quantitative comparison step"
+    echo "                          using existing evaluation CSV files"
+    echo "                          (default: False)"
+    echo "  --make_model_plots bool In compare mode, also create normal per-model plots"
+    echo "                          Default: True"
+    echo "  --distance_m float      Matching distance for iou_buffer, in metres"
+    echo "                          Default: 300"
+    echo "  --help                  Show this help message"
+    echo ""
+    echo "Standard examples:"
+    echo "  eval_metrics --size full --model ndvi --metric all --plot False"
+    echo "  eval_metrics --size full --model ndvi --metric all --plot True"
+    echo ""
+    echo "Comparison examples:"
+    echo "  eval_metrics --size full --metric all --compare True"
+    echo "  eval_metrics --size full --metric all --compare True --models std,diff,inverse_uhei,ndvi"
+    echo "  eval_metrics --size full --comparison_only True"
+    echo ""
+    echo "Outputs:"
+    echo "  Per-model metrics:      evaluation/<size>/<model>/<metric>.csv"
+    echo "  Per-model plots:        plot/<size>/<model>/"
+    echo "  Comparison CSV:         evaluation/<size>/comparison/"
+    echo "  Comparison plots:       plot/<size>/comparison/"
+}
+
+error() {
+    echo "ERROR: $*" >&2
+    exit 1
+}
+
+require_value() {
+    local option="$1"
+    local value="${2:-}"
+
+    if [[ -z "$value" || "$value" == --* ]]; then
+        error "Missing value for ${option}."
+    fi
+}
+
+# ============================
+# Default values
+# ============================
+
+SIZE="full"
+MODEL="ndvi"
+MODELS="all"
+METRIC="jaccard"
+PLOT="False"
+COMPARE="False"
+COMPARISON_ONLY="False"
+MAKE_MODEL_PLOTS="True"
+DISTANCE_M="300"
+
+# ============================
+# Parse parameters
+# ============================
+
+while [[ "$#" -gt 0 ]]; do
+    case "$1" in
+        --size)
+            require_value "$1" "${2:-}"
+            SIZE="$2"
+            shift 2
+            ;;
+        --model)
+            require_value "$1" "${2:-}"
+            MODEL="$2"
+            shift 2
+            ;;
+        --models)
+            require_value "$1" "${2:-}"
+            MODELS="$2"
+            shift 2
+            ;;
+        --metric)
+            require_value "$1" "${2:-}"
+            METRIC="$2"
+            shift 2
+            ;;
+        --plot)
+            require_value "$1" "${2:-}"
+            PLOT="$2"
+            shift 2
+            ;;
+        --compare)
+            require_value "$1" "${2:-}"
+            COMPARE="$2"
+            shift 2
+            ;;
+        --comparison_only|--comparison-only)
+            require_value "$1" "${2:-}"
+            COMPARISON_ONLY="$2"
+            shift 2
+            ;;
+        --make_model_plots)
+            require_value "$1" "${2:-}"
+            MAKE_MODEL_PLOTS="$2"
+            shift 2
+            ;;
+        --distance_m)
+            require_value "$1" "${2:-}"
+            DISTANCE_M="$2"
+            shift 2
+            ;;
+        --help|-h)
+            show_help
+            exit 0
+            ;;
+        *)
+            error "Unknown parameter: $1"
+            ;;
+    esac
+done
+
+# ============================
+# Validate parameters
+# ============================
+
+case "$SIZE" in
+    center|full) ;;
+    *) error "Invalid --size '$SIZE'. Allowed: center, full." ;;
+esac
+
+case "$MODEL" in
+    ndvi|inverse_uhei|diff|std) ;;
+    *) error "Invalid --model '$MODEL'. Allowed: ndvi, inverse_uhei, diff, std." ;;
+esac
+
+case "$METRIC" in
+    jaccard|iou_buffer|utility_diff|yard_util|street_util|all) ;;
+    *) error "Invalid --metric '$METRIC'." ;;
+esac
+
+case "$PLOT" in
+    True|False) ;;
+    *) error "Invalid --plot '$PLOT'. Allowed: True, False." ;;
+esac
+
+case "$COMPARE" in
+    True|False) ;;
+    *) error "Invalid --compare '$COMPARE'. Allowed: True, False." ;;
+esac
+
+case "$COMPARISON_ONLY" in
+    True|False) ;;
+    *) error "Invalid --comparison_only '$COMPARISON_ONLY'. Allowed: True, False." ;;
+esac
+
+# Convenience: comparison-only mode implies comparison mode and skips per-model plots.
+if [[ "$COMPARISON_ONLY" == "True" ]]; then
+    COMPARE="True"
+    MAKE_MODEL_PLOTS="False"
+fi
+
+case "$MAKE_MODEL_PLOTS" in
+    True|False) ;;
+    *) error "Invalid --make_model_plots '$MAKE_MODEL_PLOTS'. Allowed: True, False." ;;
+esac
+
+if ! [[ "$DISTANCE_M" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+    error "--distance_m must be a positive number."
+fi
+
+# ============================
+# Helper: parse model list
+# ============================
+
+parse_models() {
+    if [[ "$MODELS" == "all" ]]; then
+        echo "std diff inverse_uhei ndvi"
+    else
+        echo "$MODELS" | tr ',' ' '
+    fi
+}
+
+validate_model_list() {
+    local model
+
+    for model in $(parse_models); do
+        case "$model" in
+            ndvi|inverse_uhei|diff|std) ;;
+            *) error "Invalid model in --models: '$model'. Allowed: ndvi, inverse_uhei, diff, std." ;;
+        esac
+    done
+}
+
+# ============================
+# Standard mode
+# ============================
+
+if [[ "$COMPARE" == "False" ]]; then
+    echo "============================================================"
+    echo "STANDARD EVALUATION"
+    echo "============================================================"
+    echo "SIZE=${SIZE}"
+    echo "MODEL=${MODEL}"
+    echo "METRIC=${METRIC}"
+    echo "PLOT=${PLOT}"
+    echo "DISTANCE_M=${DISTANCE_M}"
+    echo "============================================================"
+
+    python3 src/evaluation.py \
+        --size "${SIZE}" \
+        --model "${MODEL}" \
+        --metric "${METRIC}" \
+        --plot "${PLOT}" \
+        --distance_m "${DISTANCE_M}"
+
+    if [[ "$PLOT" == "True" ]]; then
+        echo "Plot creation completed."
+    else
+        echo "Results evaluation completed."
+    fi
+
+    exit 0
+fi
+
+# ============================
+# Comparison mode
+# ============================
+
+validate_model_list
+
+echo "============================================================"
+echo "COMPARISON MODE"
+echo "============================================================"
+echo "SIZE=${SIZE}"
+echo "MODELS=$(parse_models)"
+echo "METRIC=${METRIC}"
+echo "DISTANCE_M=${DISTANCE_M}"
+echo "COMPARISON_ONLY=${COMPARISON_ONLY}"
+echo "MAKE_MODEL_PLOTS=${MAKE_MODEL_PLOTS}"
+echo "============================================================"
+
+# 1. Compute CSV metrics for each model, unless comparison-only mode is enabled.
+if [[ "$COMPARISON_ONLY" == "False" ]]; then
+    for current_model in $(parse_models); do
+        echo
+        echo "============================================================"
+        echo "COMPUTING METRICS"
+        echo "MODEL=${current_model}"
+        echo "============================================================"
+
+        python3 src/evaluation.py \
+            --size "${SIZE}" \
+            --model "${current_model}" \
+            --metric "${METRIC}" \
+            --plot False \
+            --distance_m "${DISTANCE_M}"
+    done
+else
+    echo
+    echo "============================================================"
+    echo "SKIPPING METRIC COMPUTATION"
+    echo "COMPARISON_ONLY=True"
+    echo "Using existing CSV files in evaluation/${SIZE}/<model>/"
+    echo "============================================================"
+fi
+
+# 2. Optionally create normal per-model plots.
+if [[ "$MAKE_MODEL_PLOTS" == "True" && "$COMPARISON_ONLY" == "False" ]]; then
+    for current_model in $(parse_models); do
+        echo
+        echo "============================================================"
+        echo "CREATING PER-MODEL PLOTS"
+        echo "MODEL=${current_model}"
+        echo "============================================================"
+
+        python3 src/evaluation.py \
+            --size "${SIZE}" \
+            --model "${current_model}" \
+            --metric "${METRIC}" \
+            --plot True \
+            --distance_m "${DISTANCE_M}"
+    done
+fi
+
+# 3. Quantitative robustness comparison.
+echo
+echo "============================================================"
+echo "QUANTITATIVE ROBUSTNESS COMPARISON"
+echo "============================================================"
+
+export TALEA_SIZE="${SIZE}"
+export TALEA_MODELS="$(parse_models)"
+
+python3 - <<'PY'
+from pathlib import Path
+import os
+import textwrap
+
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+
+SIZE = os.environ["TALEA_SIZE"]
+MODELS = os.environ["TALEA_MODELS"].split()
+
+EVAL_DIR = Path("evaluation") / SIZE
+OUT_DIR = EVAL_DIR / "comparison"
+PLOT_DIR = Path("plot") / SIZE / "comparison"
+
+OUT_DIR.mkdir(parents=True, exist_ok=True)
+PLOT_DIR.mkdir(parents=True, exist_ok=True)
+
+SCORE_METRICS = {
+    "jaccard",
+    "iou_buffer",
+}
+
+RATIO_METRICS = {
+    "utility_diff",
+    "yard_util",
+    "street_util",
+}
+
+METRIC_FILES = [
+    "jaccard.csv",
+    "iou_buffer.csv",
+    "utility_diff.csv",
+    "yard_util.csv",
+    "street_util.csv",
+]
+
+def clean_str(value):
+    if pd.isna(value):
+        return ""
+    value = str(value).strip()
+    if value.lower() in {"nan", "none"}:
+        return ""
+    return value
+
+def numeric_level(value):
+    value = clean_str(value)
+    if value == "":
+        return np.nan
+    try:
+        return float(value)
+    except Exception:
+        return np.nan
+
+def robustness_from_score(value):
+    """
+    For Jaccard and IoU buffer:
+    1 means equal to baseline.
+    """
+    if not np.isfinite(value):
+        return np.nan
+    return max(0.0, min(1.0, float(value)))
+
+def robustness_from_ratio(value):
+    """
+    For ratio metrics:
+    1 means equal to baseline.
+    Values above and below 1 are penalized symmetrically.
+    Example:
+      ratio = 0.80 -> robustness = 0.80
+      ratio = 1.25 -> robustness = 0.80
+    """
+    if not np.isfinite(value) or value <= 0:
+        return np.nan
+    value = float(value)
+    return max(0.0, min(1.0, min(value, 1.0 / value)))
+
+rows = []
+
+for model in MODELS:
+    model_dir = EVAL_DIR / model
+
+    if not model_dir.exists():
+        print(f"WARNING: evaluation folder missing for model '{model}': {model_dir}")
+        continue
+
+    for filename in METRIC_FILES:
+        csv_path = model_dir / filename
+
+        if not csv_path.exists():
+            print(f"WARNING: metric CSV missing: {csv_path}")
+            continue
+
+        metric = csv_path.stem
+
+        try:
+            df = pd.read_csv(csv_path)
+        except Exception as exc:
+            print(f"WARNING: cannot read {csv_path}: {exc}")
+            continue
+
+        if df.empty:
+            continue
+
+        df.columns = [str(c).strip() for c in df.columns]
+
+        required_meta = {
+            "noise_type",
+            "noise_source",
+            "noise_level",
+            "aggregation_method",
+        }
+
+        missing = required_meta - set(df.columns)
+        if missing:
+            print(f"WARNING: skipping {csv_path}; missing metadata columns: {sorted(missing)}")
+            continue
+
+        if metric in SCORE_METRICS:
+            if "score" not in df.columns:
+                print(f"WARNING: skipping {csv_path}; missing score column")
+                continue
+
+            for _, row in df.iterrows():
+                raw_value = pd.to_numeric(row["score"], errors="coerce")
+
+                if pd.isna(raw_value):
+                    continue
+
+                robustness = robustness_from_score(float(raw_value))
+
+                rows.append({
+                    "model": model,
+                    "metric": metric,
+                    "value_kind": "score",
+                    "noise_method": clean_str(row["noise_type"]),
+                    "noise_type": clean_str(row["noise_type"]),
+                    "noise_source": clean_str(row["noise_source"]),
+                    "noise_level": numeric_level(row["noise_level"]),
+                    "aggregation_method": clean_str(row["aggregation_method"]),
+                    "raw_value": float(raw_value),
+                    "robustness": robustness,
+                    "robustness_pct": robustness * 100.0 if np.isfinite(robustness) else np.nan,
+                    "drop_pct": (1.0 - robustness) * 100.0 if np.isfinite(robustness) else np.nan,
+                    "csv": str(csv_path),
+                })
+
+        elif metric in RATIO_METRICS:
+            value_column = "mean_noise_over_baseline"
+
+            if value_column not in df.columns:
+                print(f"WARNING: skipping {csv_path}; missing {value_column} column")
+                continue
+
+            for _, row in df.iterrows():
+                raw_value = pd.to_numeric(row[value_column], errors="coerce")
+
+                if pd.isna(raw_value):
+                    continue
+
+                robustness = robustness_from_ratio(float(raw_value))
+
+                rows.append({
+                    "model": model,
+                    "metric": metric,
+                    "value_kind": "ratio_noise_over_baseline",
+                    "noise_method": clean_str(row["noise_type"]),
+                    "noise_type": clean_str(row["noise_type"]),
+                    "noise_source": clean_str(row["noise_source"]),
+                    "noise_level": numeric_level(row["noise_level"]),
+                    "aggregation_method": clean_str(row["aggregation_method"]),
+                    "raw_value": float(raw_value),
+                    "robustness": robustness,
+                    "robustness_pct": robustness * 100.0 if np.isfinite(robustness) else np.nan,
+                    "drop_pct": (1.0 - robustness) * 100.0 if np.isfinite(robustness) else np.nan,
+                    "csv": str(csv_path),
+                })
+
+long_df = pd.DataFrame(rows)
+
+if long_df.empty:
+    raise SystemExit("No robustness rows were generated.")
+
+long_df = long_df.replace([np.inf, -np.inf], np.nan)
+long_df = long_df.dropna(subset=["robustness_pct"])
+
+long_df.to_csv(OUT_DIR / "comparison_long.csv", index=False)
+
+# Keep level-based noise separate from aggregation.
+level_df = long_df[
+    long_df["aggregation_method"].eq("")
+    & long_df["noise_level"].notna()
+].copy()
+
+aggregation_df = long_df[
+    long_df["noise_method"].eq("aggregation")
+    | long_df["aggregation_method"].ne("")
+].copy()
+
+aggregation_df.to_csv(OUT_DIR / "comparison_aggregation.csv", index=False)
+
+def summarize(df, group_cols, filename):
+    if df.empty:
+        out = pd.DataFrame()
+        out.to_csv(OUT_DIR / filename, index=False)
+        return out
+
+    out = (
+        df.groupby(group_cols, dropna=False)
+        .agg(
+            n_points=("robustness_pct", "count"),
+            mean_robustness_pct=("robustness_pct", "mean"),
+            median_robustness_pct=("robustness_pct", "median"),
+            min_robustness_pct=("robustness_pct", "min"),
+            p10_robustness_pct=("robustness_pct", lambda x: float(np.nanpercentile(x, 10))),
+            max_drop_pct=("drop_pct", "max"),
+            std_robustness_pct=("robustness_pct", "std"),
+        )
+        .reset_index()
+    )
+
+    out = out.sort_values(
+        ["mean_robustness_pct", "min_robustness_pct"],
+        ascending=[False, False],
+    )
+
+    out.to_csv(OUT_DIR / filename, index=False)
+    return out
+
+model_summary = summarize(
+    level_df,
+    ["model"],
+    "comparison_by_model.csv",
+)
+
+model_metric_summary = summarize(
+    level_df,
+    ["model", "metric"],
+    "comparison_by_model_metric.csv",
+)
+
+model_method_summary = summarize(
+    level_df,
+    ["model", "noise_method"],
+    "comparison_by_model_noise_method.csv",
+)
+
+model_source_summary = summarize(
+    level_df,
+    ["model", "noise_source"],
+    "comparison_by_model_noise_source.csv",
+)
+
+model_method_source_summary = summarize(
+    level_df,
+    ["model", "noise_method", "noise_source"],
+    "comparison_by_model_noise_method_source.csv",
+)
+
+# Series summary: one row per model x metric x method x source.
+series_rows = []
+
+series_group_cols = [
+    "model",
+    "metric",
+    "value_kind",
+    "noise_method",
+    "noise_source",
+]
+
+for key, g in level_df.groupby(series_group_cols, dropna=False):
+    g = g.sort_values("noise_level").copy()
+
+    levels = sorted(g["noise_level"].dropna().unique())
+    values = g["robustness_pct"].to_numpy(dtype=float)
+
+    if len(values) == 0:
+        continue
+
+    mean_rob = float(np.nanmean(values))
+    median_rob = float(np.nanmedian(values))
+    min_rob = float(np.nanmin(values))
+    max_rob = float(np.nanmax(values))
+    std_rob = float(np.nanstd(values))
+    range_rob = max_rob - min_rob
+
+    x = g["noise_level"].to_numpy(dtype=float)
+    y = g["robustness_pct"].to_numpy(dtype=float)
+    valid = np.isfinite(x) & np.isfinite(y)
+
+    if valid.sum() >= 2:
+        slope = float(np.polyfit(x[valid], y[valid], 1)[0])
+    else:
+        slope = np.nan
+
+    lvl1_values = g.loc[g["noise_level"].eq(1), "robustness_pct"]
+    lvl5_values = g.loc[g["noise_level"].eq(5), "robustness_pct"]
+
+    robustness_lvl1 = float(lvl1_values.iloc[0]) if len(lvl1_values) else np.nan
+    robustness_lvl5 = float(lvl5_values.iloc[0]) if len(lvl5_values) else np.nan
+
+    if np.isfinite(robustness_lvl1) and np.isfinite(robustness_lvl5):
+        delta_lvl5_minus_lvl1 = robustness_lvl5 - robustness_lvl1
+    else:
+        delta_lvl5_minus_lvl1 = np.nan
+
+    item = dict(zip(series_group_cols, key if isinstance(key, tuple) else (key,)))
+    item.update({
+        "levels": ",".join(str(int(x)) if float(x).is_integer() else str(x) for x in levels),
+        "n_levels": len(levels),
+        "complete_5_levels": set(levels) == {1, 2, 3, 4, 5},
+        "mean_robustness_pct": mean_rob,
+        "median_robustness_pct": median_rob,
+        "min_robustness_pct": min_rob,
+        "max_robustness_pct": max_rob,
+        "std_robustness_pct": std_rob,
+        "range_robustness_pct": range_rob,
+        "max_drop_pct": 100.0 - min_rob,
+        "slope_pct_per_level": slope,
+        "robustness_lvl1_pct": robustness_lvl1,
+        "robustness_lvl5_pct": robustness_lvl5,
+        "delta_lvl5_minus_lvl1_pct": delta_lvl5_minus_lvl1,
+        "flat_series": abs(range_rob) <= 1e-9,
+    })
+
+    series_rows.append(item)
+
+series_df = pd.DataFrame(series_rows)
+
+if not series_df.empty:
+    series_df = series_df.sort_values(
+        ["min_robustness_pct", "mean_robustness_pct"],
+        ascending=[True, True],
+    )
+
+series_df.to_csv(OUT_DIR / "comparison_by_series.csv", index=False)
+
+worst_30 = series_df.head(30).copy() if not series_df.empty else pd.DataFrame()
+best_30 = (
+    series_df
+    .sort_values(["min_robustness_pct", "mean_robustness_pct"], ascending=[False, False])
+    .head(30)
+    .copy()
+    if not series_df.empty
+    else pd.DataFrame()
+)
+
+worst_30.to_csv(OUT_DIR / "worst_30_series.csv", index=False)
+best_30.to_csv(OUT_DIR / "best_30_series.csv", index=False)
+
+# ============================================================
+# Plot functions
+# ============================================================
+
+def plot_heatmap(pivot, title, out_path, value_label="Mean robustness (%)"):
+    if pivot.empty:
+        return
+
+    fig_width = max(8, 1.15 * len(pivot.columns) + 3)
+    fig_height = max(4, 0.8 * len(pivot.index) + 2)
+
+    fig, ax = plt.subplots(figsize=(fig_width, fig_height))
+
+    data = pivot.to_numpy(dtype=float)
+    image = ax.imshow(data, aspect="auto", vmin=0, vmax=100)
+
+    ax.set_xticks(np.arange(len(pivot.columns)))
+    ax.set_yticks(np.arange(len(pivot.index)))
+
+    ax.set_xticklabels(pivot.columns, rotation=45, ha="right")
+    ax.set_yticklabels(pivot.index)
+
+    ax.set_title(title, fontweight="bold")
+    ax.grid(False)
+
+    for i in range(data.shape[0]):
+        for j in range(data.shape[1]):
+            value = data[i, j]
+            if np.isfinite(value):
+                ax.text(j, i, f"{value:.1f}", ha="center", va="center", fontsize=8)
+
+    colorbar = fig.colorbar(image, ax=ax)
+    colorbar.set_label(value_label)
+
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+def bar_plot(df, x_col, y_col, title, ylabel, out_path):
+    if df.empty:
+        return
+
+    ordered = df.sort_values(y_col, ascending=False).copy()
+
+    fig, ax = plt.subplots(figsize=(9, 5))
+
+    ax.bar(ordered[x_col].astype(str), ordered[y_col])
+    ax.set_ylim(0, 100)
+    ax.set_ylabel(ylabel)
+    ax.set_title(title, fontweight="bold")
+    ax.grid(axis="y", alpha=0.35)
+
+    for idx, value in enumerate(ordered[y_col]):
+        if np.isfinite(value):
+            ax.text(idx, value + 1, f"{value:.1f}", ha="center", va="bottom", fontsize=9)
+
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+# Plot 1: overall model ranking.
+bar_plot(
+    model_summary,
+    "model",
+    "mean_robustness_pct",
+    "Overall robustness by model",
+    "Mean robustness (%)",
+    PLOT_DIR / "comparison_by_model.png",
+)
+
+# Plot 2: model x metric.
+if not model_metric_summary.empty:
+    pivot = model_metric_summary.pivot(
+        index="model",
+        columns="metric",
+        values="mean_robustness_pct",
+    )
+    plot_heatmap(
+        pivot,
+        "Mean robustness by model and metric",
+        PLOT_DIR / "heatmap_model_metric.png",
+    )
+
+# Plot 3: model x noise method.
+if not model_method_summary.empty:
+    pivot = model_method_summary.pivot(
+        index="model",
+        columns="noise_method",
+        values="mean_robustness_pct",
+    )
+    plot_heatmap(
+        pivot,
+        "Mean robustness by model and noise method",
+        PLOT_DIR / "heatmap_model_noise_method.png",
+    )
+
+# Plot 4: model x noise source.
+if not model_source_summary.empty:
+    pivot = model_source_summary.pivot(
+        index="model",
+        columns="noise_source",
+        values="mean_robustness_pct",
+    )
+    plot_heatmap(
+        pivot,
+        "Mean robustness by model and noise source",
+        PLOT_DIR / "heatmap_model_noise_source.png",
+    )
+
+# Plot 5: worst series.
+if not worst_30.empty:
+    worst = worst_30.head(20).copy()
+
+    worst["label"] = (
+        worst["model"].astype(str)
+        + " | "
+        + worst["metric"].astype(str)
+        + " | "
+        + worst["noise_method"].astype(str)
+        + "-"
+        + worst["noise_source"].astype(str)
+    )
+
+    fig_height = max(6, 0.45 * len(worst))
+    fig, ax = plt.subplots(figsize=(12, fig_height))
+
+    y = np.arange(len(worst))
+
+    ax.barh(y, worst["min_robustness_pct"])
+    ax.set_yticks(y)
+    ax.set_yticklabels(worst["label"])
+    ax.invert_yaxis()
+
+    ax.set_xlim(0, 100)
+    ax.set_xlabel("Worst robustness over noise levels (%)")
+    ax.set_title("Worst 20 robustness series", fontweight="bold")
+    ax.grid(axis="x", alpha=0.35)
+
+    for i, value in enumerate(worst["min_robustness_pct"]):
+        if np.isfinite(value):
+            ax.text(value + 1, i, f"{value:.1f}", va="center", fontsize=8)
+
+    fig.tight_layout()
+    fig.savefig(PLOT_DIR / "worst_20_series.png", dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+# Plot 6: slope degradation.
+if not series_df.empty:
+    slope_df = (
+        series_df
+        .dropna(subset=["slope_pct_per_level"])
+        .sort_values("slope_pct_per_level", ascending=True)
+        .head(20)
+        .copy()
+    )
+
+    if not slope_df.empty:
+        slope_df["label"] = (
+            slope_df["model"].astype(str)
+            + " | "
+            + slope_df["metric"].astype(str)
+            + " | "
+            + slope_df["noise_method"].astype(str)
+            + "-"
+            + slope_df["noise_source"].astype(str)
+        )
+
+        fig_height = max(6, 0.45 * len(slope_df))
+        fig, ax = plt.subplots(figsize=(12, fig_height))
+
+        y = np.arange(len(slope_df))
+
+        ax.barh(y, slope_df["slope_pct_per_level"])
+        ax.set_yticks(y)
+        ax.set_yticklabels(slope_df["label"])
+        ax.invert_yaxis()
+
+        ax.set_xlabel("Slope: robustness percentage points per noise level")
+        ax.set_title("Strongest degradation trends", fontweight="bold")
+        ax.axvline(0.0, linestyle="--", linewidth=1)
+        ax.grid(axis="x", alpha=0.35)
+
+        for i, value in enumerate(slope_df["slope_pct_per_level"]):
+            if np.isfinite(value):
+                ax.text(value, i, f" {value:.2f}", va="center", fontsize=8)
+
+        fig.tight_layout()
+        fig.savefig(PLOT_DIR / "strongest_degradation_slopes.png", dpi=150, bbox_inches="tight")
+        plt.close(fig)
+
+# Markdown report.
+report_path = OUT_DIR / "comparison_report.md"
+
+with open(report_path, "w", encoding="utf-8") as f:
+    f.write("# Model robustness comparison\n\n")
+
+    f.write("## Robustness definition\n\n")
+    f.write(
+        textwrap.dedent(
+            """
+            Robustness is normalized on a 0–100 scale.
+
+            - For `jaccard` and `iou_buffer`, robustness is `100 * score`.
+              A value of 100 means identical to the baseline.
+            - For utility ratio metrics, robustness is `100 * min(ratio, 1 / ratio)`.
+              This treats increases and decreases from the baseline symmetrically.
+            - `mean_robustness_pct` summarizes the average robustness.
+            - `min_robustness_pct` captures the worst observed robustness.
+            - `max_drop_pct` is `100 - min_robustness_pct`.
+            - `slope_pct_per_level` estimates whether robustness decreases as the noise level increases.
+            """
+        ).strip()
+    )
+    f.write("\n\n")
+
+    f.write("## Robustness by model\n\n")
+    f.write(model_summary.to_string(index=False))
+    f.write("\n\n")
+
+    f.write("## Worst 30 series\n\n")
+    if worst_30.empty:
+        f.write("No series available.\n")
+    else:
+        f.write(worst_30.to_string(index=False))
+    f.write("\n\n")
+
+# Terminal output.
+print("=" * 120)
+print("MODEL COMPARISON COMPLETED")
+print("=" * 120)
+
+print(f"Models: {', '.join(MODELS)}")
+print(f"Input evaluation dir: {EVAL_DIR}")
+print(f"Comparison CSV dir: {OUT_DIR}")
+print(f"Comparison plot dir: {PLOT_DIR}")
+print(f"Report: {report_path}")
+
+print()
+print("=" * 120)
+print("ROBUSTNESS BY MODEL")
+print("=" * 120)
+
+if model_summary.empty:
+    print("No model summary available.")
+else:
+    print(model_summary.to_string(index=False))
+
+print()
+print("=" * 120)
+print("WORST 20 SERIES")
+print("=" * 120)
+
+if series_df.empty:
+    print("No series available.")
+else:
+    cols = [
+        "model",
+        "metric",
+        "noise_method",
+        "noise_source",
+        "levels",
+        "mean_robustness_pct",
+        "min_robustness_pct",
+        "max_drop_pct",
+        "slope_pct_per_level",
+    ]
+
+    print(
+        series_df
+        .head(20)[cols]
+        .to_string(index=False)
+    )
+
+print()
+print("=" * 120)
+print("GENERATED FILES")
+print("=" * 120)
+
+for path in sorted(OUT_DIR.glob("*")):
+    print(path)
+
+for path in sorted(PLOT_DIR.glob("*")):
+    print(path)
+PY
+
+echo
+echo "Comparison completed."
+echo "CSV output:  evaluation/${SIZE}/comparison/"
+echo "Plot output: plot/${SIZE}/comparison/"

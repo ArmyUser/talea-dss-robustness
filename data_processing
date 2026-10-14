@@ -1,0 +1,118 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+_err() {
+    echo "ERROR: $*" >&2
+    exit 1
+}
+
+show_help() {
+    cat <<'EOF'
+Usage: data_processing [OPTIONS]
+
+  --noise_type str       Type of noise: gauss, multiplicative, mislabelling, missingness (default: gauss)
+  --noise_source str     Target data: ndvi, uhei, land_use, population_density (default: ndvi)
+  --noise_level str      Noise severity: 1, 2, 3, 4, 5 (default: 1)
+  --help                 Show this help message
+
+Examples:
+  data_processing --noise_type gauss --noise_source uhei --noise_level 2
+  data_processing --noise_type missingness --noise_source population_density --noise_level 3
+EOF
+    exit 0
+}
+
+is_valid_noise_level() {
+    case "$1" in
+        1|2|3|4|5) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+# ============================
+# Default parameters
+# ============================
+
+NOISE_TYPE="gauss"
+NOISE_SOURCE="ndvi"
+NOISE_LEVEL="1"
+
+# ============================
+# Parse parameters
+# ============================
+
+while [[ "$#" -gt 0 ]]; do
+    case "$1" in
+        --noise_type)
+            [[ $# -ge 2 ]] || _err "Missing value for --noise_type"
+            NOISE_TYPE="$2"
+            shift 2
+            ;;
+        --noise_source)
+            [[ $# -ge 2 ]] || _err "Missing value for --noise_source"
+            NOISE_SOURCE="$2"
+            shift 2
+            ;;
+        --noise_level)
+            [[ $# -ge 2 ]] || _err "Missing value for --noise_level"
+            NOISE_LEVEL="$2"
+            shift 2
+            ;;
+        --help)
+            show_help
+            ;;
+        *)
+            _err "Unknown parameter: $1"
+            ;;
+    esac
+done
+
+# ============================
+# Basic validation
+# ============================
+
+case "$NOISE_TYPE" in
+    gauss|multiplicative|mislabelling|missingness) ;;
+    *) _err "Invalid --noise_type: $NOISE_TYPE" ;;
+esac
+
+case "$NOISE_SOURCE" in
+    ndvi|uhei|land_use|population_density) ;;
+    *) _err "Invalid --noise_source: $NOISE_SOURCE" ;;
+esac
+
+is_valid_noise_level "$NOISE_LEVEL" || _err "Invalid --noise_level: $NOISE_LEVEL (allowed: 1..5)"
+
+# ============================
+# Enforce rules
+# ============================
+
+case "$NOISE_SOURCE" in
+    land_use)
+        if [[ "$NOISE_TYPE" != "mislabelling" ]]; then
+            _err "For --noise_source land_use, only --noise_type mislabelling is allowed."
+        fi
+        ;;
+
+    ndvi|uhei)
+        if [[ "$NOISE_TYPE" == "mislabelling" || "$NOISE_TYPE" == "missingness" ]]; then
+            _err "For --noise_source $NOISE_SOURCE, only --noise_type gauss or multiplicative are allowed."
+        fi
+        ;;
+
+    population_density)
+        # all four noise types are supported in Python
+        ;;
+esac
+
+# ============================
+# Call process_data.py
+# ============================
+
+echo "Running process_data.py..."
+python3 src/process_data.py \
+    --noise_type "$NOISE_TYPE" \
+    --noise_source "$NOISE_SOURCE" \
+    --noise_level "$NOISE_LEVEL"
+
+echo "Data processed successfully!"

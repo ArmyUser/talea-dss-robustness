@@ -1,0 +1,5 @@
+output ["street_cells = ",showDzn(street_cells),";\n","yard_cells = ",showDzn(yard_cells),";\n","utility = ",showDzn(utility),";\n"];
+int: len = 11560;
+array [1..len] of float: utility;
+array [1..len] of float: yard_cells;
+array [1..len] of float: street_cells;
